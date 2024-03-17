@@ -1,10 +1,12 @@
-from typing import Annotated, List
+from typing import Annotated
+
+import xmltodict
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
-from database import SessionLocal, engine
+
 import models
-import xmltodict
+from database import SessionLocal, engine
 
 app = FastAPI()
 models.Base.metadata.create_all(bind=engine)
@@ -19,6 +21,34 @@ def get_db():
 
 
 db_dependency = Annotated[Session, Depends(get_db)]
+
+
+@app.get("/questions/all")
+async def get_all_questions(db: db_dependency):
+    questions = db.query(models.Question).all()
+    choices = db.query(models.Choice).all()
+    response_data = {
+        "response": {
+            "questions": {
+                "question": [
+                    {
+                        "question_text": question.question_text,
+                        "choices": [
+                            {
+                                "choice_text": choice.choice_text,
+                                "is_correct": choice.is_correct
+                            }
+                            for choice in choices
+                            if choice.question_id == question.id
+                        ]
+                    }
+                    for question in questions
+                ]
+            }
+        }
+    }
+    xml_response = xmltodict.unparse(response_data)
+    return Response(content=xml_response, media_type='application/xml')
 
 
 @app.post("/questions/")
