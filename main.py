@@ -1,23 +1,14 @@
-from fastapi import FastAPI, HTTPException, Depends, Request, Response
-from pydantic import BaseModel
-from fastapi import XMLResponse
-from typing import Callable, List, Annotated
-from database import engine, SessionLocal
+from typing import Annotated, List
+from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
+from database import SessionLocal, engine
 import models
 import xmltodict
-
 
 app = FastAPI()
 models.Base.metadata.create_all(bind=engine)
 
-class ChoiseBase(BaseModel):
-    choice_text: str
-    is_correct: bool
-
-class QuestionBase(BaseModel):
-    question_text: str
-    choices: List[ChoiseBase]
 
 def get_db():
     db = SessionLocal()
@@ -26,40 +17,40 @@ def get_db():
     finally:
         db.close()
 
+
 db_dependency = Annotated[Session, Depends(get_db)]
 
 
-@app.post('/questions/', response_class=XMLResponse)
-async def create_question(request: Request, db: db_dependency):
-    body = await parse_xml_body(request)()
-    # Aquí deberías convertir el XML a tu modelo Pydantic o a un dict directamente
-    question_data = body['question']  # Asegúrate de que este path sea correcto según tu XML
-    question_text = question_data['question_text']
-    choices = question_data['choices']
-    db_question = models.Question(question=question_text)
-    db.add(db_question)
-    db.commit()
-    db.refresh(db_question)
-    
-    for choice in choices['choice']:
-        db_choice = models.Choice(choice_text=choice['choice_text'],
-                                  is_correct=choice['is_correct'],
-                                  question_id=db_question.id)
-        db.add(db_choice)
-    db.commit()
-    
-    # Preparar la respuesta como XML
-    response_dict = {"response": "Pregunta creada con éxito"}  # Ajusta esto según necesites
-    return XMLResponse(content=response_dict)
+@app.post("/questions/")
+async def create_question(question: Request, db: db_dependency):
+    body = await question.body()
+    try:
+        data = xmltodict.parse(body)
+        if 'question' not in data or 'question_text' not in data['question'] or 'choices' not in data['question']:
+            raise HTTPException(status_code=400, detail="Malformed XML.")
 
-def parse_xml_body(request: Request) -> Callable:
-    async def _parse():
-        body = await request.body()
-        return xmltodict.parse(body.decode("utf-8"))
-    return _parse
+        question_text = data['question']['question_text']
+        choices = data['question']['choices']['choice']
+        db_question = models.Question(question_text=question_text)
+        db.add(db_question)
+        db.commit()
+        db.refresh(db_question)
+        for choice in choices:
+            choice_text = choice['choice_text']
+            is_correct = bool(choice['is_correct'])
+            db_choice = models.Choice(choice_text=choice_text,
+                                      is_correct=is_correct,
+                                      question_id=db_question.id)
+            db.add(db_choice)
+        db.commit()
+        response_data = {
+            "response": {
+                "message": "XML recibido correctamente.",
+                "data": data
+            }
+        }
+        xml_response = xmltodict.unparse(response_data)
+        return Response(content=xml_response, media_type='application/xml')
 
-class XMLResponse(Response):
-    media_type = "application/xml"
-    def render(self, content: dict) -> bytes:
-        xml_content = xmltodict.unparse(content, pretty=True)
-        return xml_content.encode("utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
